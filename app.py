@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import os
 import glob
 import datetime
+import json
 from tandem_wrapper import Material, calculate_absorbed_power_per_layer
 import material_interpolation as mi
 import optimizer as opt
@@ -58,7 +59,7 @@ def plot_material(material):
 def main():
     st.title("Perovskite Tandem TMM Analysis")
     
-    tabs = st.tabs(["Material Viewer", "Simulation", "Material Mixer", "Optimization"])
+    tabs = st.tabs(["Material Viewer", "Detector Maker", "Material Mixer", "Optimization"])
     
     with tabs[0]:
         st.header("Material Viewer")
@@ -73,28 +74,47 @@ def main():
                 st.error(f"Error loading material: {e}")
 
     with tabs[1]:
-        st.header("Device Simulation")
+        st.header("Detector Maker")
         
-        # Default Stack Definition
-        default_stack_data = [
-            {"Material": "ITO", "Thickness (nm)": 100},
-            {"Material": "NiO", "Thickness (nm)": 40},
-            {"Material": "MAPbI3", "Thickness (nm)": 500},
-            {"Material": "C60", "Thickness (nm)": 20},
-            {"Material": "SnO2", "Thickness (nm)": 40},
-            {"Material": "ITO", "Thickness (nm)": 100},
-            {"Material": "SnO2", "Thickness (nm)": 40},
-            {"Material": "C60", "Thickness (nm)": 5},
-            {"Material": "MAPbBr3", "Thickness (nm)": 400},
-            {"Material": "C60", "Thickness (nm)": 20},
-            {"Material": "SnO2", "Thickness (nm)": 40},
-            {"Material": "ITO", "Thickness (nm)": 140},
-        ]
+        # Session State for Stack
+        if 'detector_stack_data' not in st.session_state:
+            st.session_state['detector_stack_data'] = [
+                {"Material": "ITO", "Thickness (nm)": 100},
+                {"Material": "NiO", "Thickness (nm)": 40},
+                {"Material": "MAPbI3", "Thickness (nm)": 500},
+                {"Material": "C60", "Thickness (nm)": 20},
+                {"Material": "SnO2", "Thickness (nm)": 40},
+                {"Material": "ITO", "Thickness (nm)": 100},
+                {"Material": "SnO2", "Thickness (nm)": 40},
+                {"Material": "C60", "Thickness (nm)": 5},
+                {"Material": "MAPbBr3", "Thickness (nm)": 400},
+                {"Material": "C60", "Thickness (nm)": 20},
+                {"Material": "SnO2", "Thickness (nm)": 40},
+                {"Material": "ITO", "Thickness (nm)": 140},
+            ]
+
+        # --- Load/Save Controls ---
+        col_load, col_save = st.columns([2, 1])
+        
+        with col_load:
+            uploaded_stack = st.file_uploader("Load Stack Configuration (JSON)", type=['json'], key="stack_uploader")
+            if uploaded_stack is not None:
+                try:
+                    loaded_data = json.load(uploaded_stack)
+                    # Basic validation
+                    if isinstance(loaded_data, list) and len(loaded_data) > 0 and "Material" in loaded_data[0]:
+                        st.session_state['detector_stack_data'] = loaded_data
+                        st.success("Stack loaded!")
+                    else:
+                        st.error("Invalid stack file format.")
+                except Exception as e:
+                    st.error(f"Error loading file: {e}")
+
         
         st.subheader("Stack Configuration")
         st.info("Edit the table below. Top is incident side.")
         
-        stack_df = pd.DataFrame(default_stack_data)
+        stack_df = pd.DataFrame(st.session_state['detector_stack_data'])
         edited_stack_df = st.data_editor(
             stack_df,
             column_config={
@@ -113,8 +133,29 @@ def main():
                 ),
             },
             num_rows="dynamic",
-            use_container_width=True
+            width="stretch", # Replaces use_container_width=True
+            key="stack_editor"
         )
+        
+        # Sync edits back to session state (optional but good for persistence if we switch tabs)
+        # st.data_editor with a key automatically updates session_state[key], 
+        # but the format is a bit different (dict of changes). 
+        # However, we initialized from session_state['detector_stack_data'].
+        # To strictly persist edits across reloads/tab switches without relying on the 'key' magic which sometimes resets:
+        # We can update our source variable.
+        # But for now, let's just use the edited_stack_df for the download button.
+        
+        with col_save:
+            # Prepare JSON for download
+            # Convert DF back to list of dicts
+            stack_json = edited_stack_df.to_json(orient="records")
+            st.download_button(
+                label="Save Configuration",
+                data=stack_json,
+                file_name="detector_stack.json",
+                mime="application/json"
+            )
+
         
         light_direction = st.radio("Light Direction", ["Top (Incident on first layer)", "Bottom (Incident on last layer)"], horizontal=True)
         
@@ -399,8 +440,31 @@ def main():
         # 1. Stack Definition for Optimization
         st.subheader("1. Define Stack & Optimization Ranges")
         
-        # We need a way to define the stack AND the optimization parameters.
-        # Let's use a single dataframe for this.
+        # Load from file option
+        uploaded_opt_stack = st.file_uploader("Load Stack for Optimization (JSON)", type=['json'], key="opt_stack_uploader")
+        
+        if uploaded_opt_stack is not None:
+            try:
+                loaded_data = json.load(uploaded_opt_stack)
+                # Convert to optimization format
+                # We need to add "Optimize", "Min", "Max" columns if they don't exist
+                new_opt_data = []
+                for layer in loaded_data:
+                    new_layer = layer.copy()
+                    if "Optimize" not in new_layer:
+                        new_layer["Optimize"] = False
+                    if "Min (nm)" not in new_layer:
+                        # Default range: +/- 50% or fixed bounds
+                        th = layer.get("Thickness (nm)", 0)
+                        new_layer["Min (nm)"] = int(th * 0.5)
+                        new_layer["Max (nm)"] = int(th * 1.5)
+                    new_opt_data.append(new_layer)
+                
+                st.session_state['opt_stack_data'] = new_opt_data
+                st.success("Stack loaded into optimizer!")
+            except Exception as e:
+                st.error(f"Error loading file: {e}")
+
         
         if 'opt_stack_data' not in st.session_state:
             # Initialize with default stack but add optimization columns
@@ -411,13 +475,19 @@ def main():
                 {"Material": "C60", "Thickness (nm)": 20, "Optimize": False, "Min (nm)": 5, "Max (nm)": 50},
                 {"Material": "SnO2", "Thickness (nm)": 40, "Optimize": False, "Min (nm)": 10, "Max (nm)": 100},
                 {"Material": "ITO", "Thickness (nm)": 100, "Optimize": False, "Min (nm)": 50, "Max (nm)": 150},
-                {"Material": "SnO2", "Thickness (nm)": 40, "Optimize": False, "Min (nm)": 10, "Max (nm)": 100},
+                {"Material": "SnO2", "Thickness (nm)": 40}, # Missing fields in original default, let's fix
                 {"Material": "C60", "Thickness (nm)": 5, "Optimize": False, "Min (nm)": 1, "Max (nm)": 20},
                 {"Material": "MAPbBr3", "Thickness (nm)": 400, "Optimize": True, "Min (nm)": 200, "Max (nm)": 600},
                 {"Material": "C60", "Thickness (nm)": 20, "Optimize": False, "Min (nm)": 5, "Max (nm)": 50},
                 {"Material": "SnO2", "Thickness (nm)": 40, "Optimize": False, "Min (nm)": 10, "Max (nm)": 100},
                 {"Material": "ITO", "Thickness (nm)": 140, "Optimize": False, "Min (nm)": 50, "Max (nm)": 200},
             ]
+            # Fix missing fields in default
+            for d in default_opt_data:
+                if "Optimize" not in d: d["Optimize"] = False
+                if "Min (nm)" not in d: d["Min (nm)"] = 10
+                if "Max (nm)" not in d: d["Max (nm)"] = 100
+                
             st.session_state['opt_stack_data'] = default_opt_data
             
         opt_df = pd.DataFrame(st.session_state['opt_stack_data'])
