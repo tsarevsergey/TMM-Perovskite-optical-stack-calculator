@@ -112,7 +112,19 @@ def main():
 
         
         st.subheader("Stack Configuration")
-        st.info("Edit the table below. Top is incident side.")
+        st.info("Edit the table below. Top is incident side. You can also add/remove rows using the toolbar or buttons below.")
+        
+        # Buttons for explicit Add/Remove
+        col_add, col_rem = st.columns(2)
+        with col_add:
+            if st.button("Add Layer"):
+                st.session_state['detector_stack_data'].append({"Material": "ITO", "Thickness (nm)": 100})
+                st.rerun()
+        with col_rem:
+            if st.button("Remove Last Layer"):
+                if len(st.session_state['detector_stack_data']) > 0:
+                    st.session_state['detector_stack_data'].pop()
+                    st.rerun()
         
         stack_df = pd.DataFrame(st.session_state['detector_stack_data'])
         edited_stack_df = st.data_editor(
@@ -137,13 +149,14 @@ def main():
             key="stack_editor"
         )
         
-        # Sync edits back to session state (optional but good for persistence if we switch tabs)
-        # st.data_editor with a key automatically updates session_state[key], 
-        # but the format is a bit different (dict of changes). 
-        # However, we initialized from session_state['detector_stack_data'].
-        # To strictly persist edits across reloads/tab switches without relying on the 'key' magic which sometimes resets:
-        # We can update our source variable.
-        # But for now, let's just use the edited_stack_df for the download button.
+        # Sync edits back to session state to persist changes made in the editor
+        # This ensures that if the user adds a row via the editor UI, it saves.
+        # We compare the current session state with the edited dataframe.
+        
+        current_data = edited_stack_df.to_dict('records')
+        if current_data != st.session_state['detector_stack_data']:
+             st.session_state['detector_stack_data'] = current_data
+             # We don't rerun here to avoid interruption, but the state is updated for the next action (like Save)
         
         with col_save:
             # Prepare JSON for download
