@@ -6,6 +6,7 @@ import os
 import glob
 import datetime
 import json
+import hashlib
 from tandem_wrapper import Material, calculate_absorbed_power_per_layer
 import material_interpolation as mi
 import optimizer as opt
@@ -37,6 +38,62 @@ def get_available_materials():
 def load_material(name):
     filepath = os.path.join(MATERIALS_DIR, f"{name}.csv")
     return Material(name, filepath)
+
+def _coerce_nm_value(value, default=0):
+    if pd.isna(value):
+        return int(default)
+    try:
+        return int(round(float(value)))
+    except (TypeError, ValueError):
+        return int(default)
+
+def normalize_detector_stack(records):
+    normalized = []
+    for row in records:
+        normalized.append({
+            "Material": str(row.get("Material") or "ITO"),
+            "Thickness (nm)": max(0, _coerce_nm_value(row.get("Thickness (nm)"), 0)),
+        })
+    return normalized
+
+def normalize_optimizer_stack(records):
+    normalized = []
+    for row in records:
+        thickness_nm = max(0, _coerce_nm_value(row.get("Thickness (nm)"), 0))
+        min_default = int(thickness_nm * 0.5)
+        max_default = max(thickness_nm, int(thickness_nm * 1.5))
+        min_nm = max(0, _coerce_nm_value(row.get("Min (nm)"), min_default))
+        max_nm = max(min_nm, _coerce_nm_value(row.get("Max (nm)"), max_default))
+        normalized.append({
+            "Material": str(row.get("Material") or "ITO"),
+            "Thickness (nm)": thickness_nm,
+            "Optimize": bool(row.get("Optimize", False)),
+            "Min (nm)": min_nm,
+            "Max (nm)": max_nm,
+        })
+    return normalized
+
+def reset_editor_state(data_key, version_key, records, normalizer):
+    st.session_state[data_key] = normalizer(records)
+    st.session_state[version_key] = st.session_state.get(version_key, 0) + 1
+
+def sync_editor_state(data_key, edited_df, normalizer):
+    current_data = normalizer(edited_df.to_dict('records'))
+    if current_data != st.session_state[data_key]:
+        st.session_state[data_key] = current_data
+
+def load_uploaded_json_once(uploaded_file, signature_key):
+    if uploaded_file is None:
+        st.session_state.pop(signature_key, None)
+        return None
+
+    raw_bytes = uploaded_file.getvalue()
+    signature = hashlib.sha256(raw_bytes).hexdigest()
+    if st.session_state.get(signature_key) == signature:
+        return None
+
+    st.session_state[signature_key] = signature
+    return json.loads(raw_bytes.decode("utf-8"))
 
 def plot_material(material):
     fig, ax1 = plt.subplots()
@@ -78,7 +135,7 @@ def main():
         
         # Session State for Stack
         if 'detector_stack_data' not in st.session_state:
-            st.session_state['detector_stack_data'] = [
+            st.session_state['detector_stack_data'] = normalize_detector_stack([
                 {"Material": "ITO", "Thickness (nm)": 100},
                 {"Material": "NiO", "Thickness (nm)": 40},
                 {"Material": "MAPbI3", "Thickness (nm)": 500},
@@ -91,7 +148,9 @@ def main():
                 {"Material": "C60", "Thickness (nm)": 20},
                 {"Material": "SnO2", "Thickness (nm)": 40},
                 {"Material": "ITO", "Thickness (nm)": 140},
-            ]
+            ])
+        if 'detector_stack_editor_version' not in st.session_state:
+            st.session_state['detector_stack_editor_version'] = 0
 
         # --- Load/Save Controls ---
         col_load, col_save = st.columns([2, 1])
@@ -100,11 +159,19 @@ def main():
             uploaded_stack = st.file_uploader("Load Stack Configuration (JSON)", type=['json'], key="stack_uploader")
             if uploaded_stack is not None:
                 try:
-                    loaded_data = json.load(uploaded_stack)
+                    loaded_data = load_uploaded_json_once(uploaded_stack, "stack_uploader_signature")
+                    if loaded_data is None:
+                        loaded_data = st.session_state['detector_stack_data']
                     # Basic validation
                     if isinstance(loaded_data, list) and len(loaded_data) > 0 and "Material" in loaded_data[0]:
-                        st.session_state['detector_stack_data'] = loaded_data
-                        st.success("Stack loaded!")
+                        if loaded_data != st.session_state['detector_stack_data']:
+                            reset_editor_state(
+                                'detector_stack_data',
+                                'detector_stack_editor_version',
+                                loaded_data,
+                                normalize_detector_stack,
+                            )
+                            st.success("Stack loaded!")
                     else:
                         st.error("Invalid stack file format.")
                 except Exception as e:
@@ -118,12 +185,24 @@ def main():
         col_add, col_rem = st.columns(2)
         with col_add:
             if st.button("Add Layer"):
-                st.session_state['detector_stack_data'].append({"Material": "ITO", "Thickness (nm)": 100})
+                new_rows = st.session_state['detector_stack_data'] + [{"Material": "ITO", "Thickness (nm)": 100}]
+                reset_editor_state(
+                    'detector_stack_data',
+                    'detector_stack_editor_version',
+                    new_rows,
+                    normalize_detector_stack,
+                )
                 st.rerun()
         with col_rem:
             if st.button("Remove Last Layer"):
                 if len(st.session_state['detector_stack_data']) > 0:
-                    st.session_state['detector_stack_data'].pop()
+                    new_rows = st.session_state['detector_stack_data'][:-1]
+                    reset_editor_state(
+                        'detector_stack_data',
+                        'detector_stack_editor_version',
+                        new_rows,
+                        normalize_detector_stack,
+                    )
                     st.rerun()
         
         stack_df = pd.DataFrame(st.session_state['detector_stack_data'])
@@ -146,22 +225,17 @@ def main():
             },
             num_rows="dynamic",
             width="stretch", # Replaces use_container_width=True
-            key="stack_editor"
+            key=f"stack_editor_{st.session_state['detector_stack_editor_version']}"
         )
         
-        # Sync edits back to session state to persist changes made in the editor
-        # This ensures that if the user adds a row via the editor UI, it saves.
-        # We compare the current session state with the edited dataframe.
-        
-        current_data = edited_stack_df.to_dict('records')
-        if current_data != st.session_state['detector_stack_data']:
-             st.session_state['detector_stack_data'] = current_data
-             # We don't rerun here to avoid interruption, but the state is updated for the next action (like Save)
+        # Sync edits back to session state immediately so the first selection/change sticks.
+        sync_editor_state('detector_stack_data', edited_stack_df, normalize_detector_stack)
+        current_stack_df = pd.DataFrame(st.session_state['detector_stack_data'])
         
         with col_save:
             # Prepare JSON for download
             # Convert DF back to list of dicts
-            stack_json = edited_stack_df.to_json(orient="records")
+            stack_json = current_stack_df.to_json(orient="records")
             st.download_button(
                 label="Save Configuration",
                 data=stack_json,
@@ -193,7 +267,7 @@ def main():
                     
                     # Extract layers
                     layers_to_process = []
-                    for _, row in edited_stack_df.iterrows():
+                    for _, row in current_stack_df.iterrows():
                         mat_name = row['Material']
                         thickness = row['Thickness (nm)']
                         mat = load_material(mat_name)
@@ -221,6 +295,10 @@ def main():
                     st.session_state['simulation_results'] = {
                         'results': results,
                         'layer_names': layer_names,
+                        'layer_details': [None] + [
+                            {"material_name": name, "thickness_nm": thickness}
+                            for _, thickness, name in layers_to_process
+                        ] + [None],
                         'wavelengths': wavelengths,
                         'min_wl': min_wl,
                         'max_wl': max_wl
@@ -235,6 +313,7 @@ def main():
             res_data = st.session_state['simulation_results']
             results = res_data['results']
             layer_names = res_data['layer_names']
+            layer_details = res_data.get('layer_details', [])
             wavelengths = res_data['wavelengths']
             
             # Use stored min/max to ensure consistency
@@ -290,22 +369,40 @@ def main():
             st.pyplot(fig)
             
 
-            # Absorption Inspection
-            st.subheader("Layer Absorption Inspection")
+            # Layer-by-layer inspection
+            st.subheader("Layer-by-Layer Inspection")
             inspect_wl = st.slider("Inspection Wavelength (nm)", min_value=int(plot_min_wl), max_value=int(plot_max_wl), value=500, step=10)
             
             # Define range +/- 5nm
             wl_mask = (wavelengths >= inspect_wl - 5) & (wavelengths <= inspect_wl + 5)
             
             if np.any(wl_mask):
-                st.write(f"Average absorption in range {inspect_wl-5} nm - {inspect_wl+5} nm:")
+                st.write(f"Average fraction of incident light in range {inspect_wl-5} nm - {inspect_wl+5} nm:")
                 inspection_data = []
                 for i, name in enumerate(layer_names):
                     # Average absorption in the window
-                    avg_abs = np.mean(layer_data[i, wl_mask])
-                    inspection_data.append({"Layer": name, "Absorption (%)": f"{avg_abs*100:.2f}%"})
+                    avg_fraction = np.mean(layer_data[i, wl_mask])
+                    row = {
+                        "Component": name,
+                        "Fraction of Incident Light (%)": f"{avg_fraction*100:.2f}%"
+                    }
+
+                    detail = layer_details[i] if i < len(layer_details) else None
+                    if detail is not None:
+                        material = load_material(detail["material_name"])
+                        k_value = float(np.imag(material.get_n(inspect_wl)))
+                        thickness_nm = detail["thickness_nm"]
+                        single_pass = 1 - np.exp(-4 * np.pi * k_value * thickness_nm / inspect_wl)
+                        row["k @ λ"] = f"{k_value:.3f}"
+                        row["Single-Pass Estimate (%)"] = f"{single_pass*100:.2f}%"
+                    else:
+                        row["k @ λ"] = "-"
+                        row["Single-Pass Estimate (%)"] = "-"
+
+                    inspection_data.append(row)
                 
                 st.table(pd.DataFrame(inspection_data))
+                st.caption("Single-pass estimate ignores interface reflection and interference. It is shown only as a quick sanity check for physical layers.")
             else:
                 st.warning("No data points in the selected range.")
 
@@ -458,7 +555,9 @@ def main():
         
         if uploaded_opt_stack is not None:
             try:
-                loaded_data = json.load(uploaded_opt_stack)
+                loaded_data = load_uploaded_json_once(uploaded_opt_stack, "opt_stack_uploader_signature")
+                if loaded_data is None:
+                    loaded_data = st.session_state.get('opt_stack_data', [])
                 # Convert to optimization format
                 # We need to add "Optimize", "Min", "Max" columns if they don't exist
                 new_opt_data = []
@@ -473,15 +572,22 @@ def main():
                         new_layer["Max (nm)"] = int(th * 1.5)
                     new_opt_data.append(new_layer)
                 
-                st.session_state['opt_stack_data'] = new_opt_data
-                st.success("Stack loaded into optimizer!")
+                normalized_opt_data = normalize_optimizer_stack(new_opt_data)
+                if normalized_opt_data != st.session_state.get('opt_stack_data'):
+                    reset_editor_state(
+                        'opt_stack_data',
+                        'opt_stack_editor_version',
+                        normalized_opt_data,
+                        normalize_optimizer_stack,
+                    )
+                    st.success("Stack loaded into optimizer!")
             except Exception as e:
                 st.error(f"Error loading file: {e}")
 
         
         if 'opt_stack_data' not in st.session_state:
             # Initialize with default stack but add optimization columns
-            default_opt_data = [
+            default_opt_data = normalize_optimizer_stack([
                 {"Material": "ITO", "Thickness (nm)": 100, "Optimize": False, "Min (nm)": 50, "Max (nm)": 150},
                 {"Material": "NiO", "Thickness (nm)": 40, "Optimize": False, "Min (nm)": 10, "Max (nm)": 100},
                 {"Material": "MAPbI3", "Thickness (nm)": 500, "Optimize": True, "Min (nm)": 300, "Max (nm)": 800},
@@ -494,119 +600,134 @@ def main():
                 {"Material": "C60", "Thickness (nm)": 20, "Optimize": False, "Min (nm)": 5, "Max (nm)": 50},
                 {"Material": "SnO2", "Thickness (nm)": 40, "Optimize": False, "Min (nm)": 10, "Max (nm)": 100},
                 {"Material": "ITO", "Thickness (nm)": 140, "Optimize": False, "Min (nm)": 50, "Max (nm)": 200},
-            ]
-            # Fix missing fields in default
-            for d in default_opt_data:
-                if "Optimize" not in d: d["Optimize"] = False
-                if "Min (nm)" not in d: d["Min (nm)"] = 10
-                if "Max (nm)" not in d: d["Max (nm)"] = 100
-                
+            ])
             st.session_state['opt_stack_data'] = default_opt_data
+        if 'opt_stack_editor_version' not in st.session_state:
+            st.session_state['opt_stack_editor_version'] = 0
             
         opt_df = pd.DataFrame(st.session_state['opt_stack_data'])
-        
-        edited_opt_df = st.data_editor(
-            opt_df,
-            column_config={
-                "Material": st.column_config.SelectboxColumn("Material", options=get_available_materials(), required=True),
-                "Thickness (nm)": st.column_config.NumberColumn("Initial Thickness", min_value=0, format="%d"),
-                "Optimize": st.column_config.CheckboxColumn("Optimize?", default=False),
-                "Min (nm)": st.column_config.NumberColumn("Min", min_value=0, format="%d"),
-                "Max (nm)": st.column_config.NumberColumn("Max", min_value=0, format="%d"),
-            },
-            num_rows="dynamic",
-            width="stretch",
-            key="opt_editor"
-        )
-        
-        # Light Direction
-        opt_light_dir = st.radio("Light Direction", ["Top (Incident on Layer 1)", "Bottom (Incident on Last Layer)"], horizontal=True, key="opt_light_dir")
 
-        # Indices in stack: 1 to N (0 is Air, -1 is Air)
-        # In the DF, index i corresponds to Stack Layer i+1
-        
-        layer_options = {f"Layer {i+1}: {row['Material']}": i for i, row in edited_opt_df.iterrows()}
-        
-        col_target1, col_target2 = st.columns(2)
-        
-        with col_target1:
-            st.markdown("#### Detector 1 (Top/Blue)")
-            t1_layer_key = st.selectbox("Select Absorber Layer 1", options=list(layer_options.keys()), index=8 if len(layer_options)>8 else 0)
-            t1_center = st.number_input("Center Wavelength (nm)", value=450, step=10, key="t1_c")
-            t1_width = st.number_input("Bandwidth (nm)", value=100, step=10, key="t1_w")
+        with st.form("optimizer_form"):
+            edited_opt_df = st.data_editor(
+                opt_df,
+                column_config={
+                    "Material": st.column_config.SelectboxColumn("Material", options=get_available_materials(), required=True),
+                    "Thickness (nm)": st.column_config.NumberColumn("Initial Thickness", min_value=0, format="%d"),
+                    "Optimize": st.column_config.CheckboxColumn("Optimize?", default=False),
+                    "Min (nm)": st.column_config.NumberColumn("Min", min_value=0, format="%d"),
+                    "Max (nm)": st.column_config.NumberColumn("Max", min_value=0, format="%d"),
+                },
+                num_rows="dynamic",
+                width="stretch",
+                key=f"opt_editor_{st.session_state['opt_stack_editor_version']}"
+            )
+
+            form_opt_df = pd.DataFrame(normalize_optimizer_stack(edited_opt_df.to_dict('records')))
+
+            # Light Direction
+            opt_light_dir = st.radio("Light Direction", ["Top (Incident on Layer 1)", "Bottom (Incident on Last Layer)"], horizontal=True, key="opt_light_dir")
+
+            # Indices in stack: 1 to N (0 is Air, -1 is Air)
+            # In the DF, index i corresponds to Stack Layer i+1
+            layer_options = {f"Layer {i+1}: {row['Material']}": i for i, row in form_opt_df.iterrows()}
+            layer_option_labels = list(layer_options.keys())
+            layer_select_options = layer_option_labels if layer_option_labels else ["No layers available"]
+
+            col_target1, col_target2 = st.columns(2)
             
-        with col_target2:
-            st.markdown("#### Detector 2 (Bottom/Red)")
-            t2_layer_key = st.selectbox("Select Absorber Layer 2", options=list(layer_options.keys()), index=2 if len(layer_options)>2 else 0)
-            t2_center = st.number_input("Center Wavelength (nm)", value=750, step=10, key="t2_c")
-            t2_width = st.number_input("Bandwidth (nm)", value=100, step=10, key="t2_w")
-            
-        crosstalk_pen = st.slider("Crosstalk Penalty Weight", 0.0, 5.0, 1.0, help="Higher value = stricter penalty for crosstalk.")
+            with col_target1:
+                st.markdown("#### Detector 1 (Top/Blue)")
+                t1_layer_key = st.selectbox("Select Absorber Layer 1", options=layer_select_options, index=8 if len(layer_option_labels)>8 else 0, disabled=not layer_option_labels)
+                t1_center = st.number_input("Center Wavelength (nm)", value=450, step=10, key="t1_c")
+                t1_width = st.number_input("Bandwidth (nm)", value=100, step=10, key="t1_w")
+                
+            with col_target2:
+                st.markdown("#### Detector 2 (Bottom/Red)")
+                t2_layer_key = st.selectbox("Select Absorber Layer 2", options=layer_select_options, index=2 if len(layer_option_labels)>2 else 0, disabled=not layer_option_labels)
+                t2_center = st.number_input("Center Wavelength (nm)", value=750, step=10, key="t2_c")
+                t2_width = st.number_input("Bandwidth (nm)", value=100, step=10, key="t2_w")
+                
+            crosstalk_pen = st.slider("Crosstalk Penalty Weight", 0.0, 5.0, 1.0, help="Higher value = stricter penalty for crosstalk.")
+            start_optimization = st.form_submit_button("Start Optimization", type="primary")
+
+        sync_editor_state('opt_stack_data', form_opt_df, normalize_optimizer_stack)
+        current_opt_df = pd.DataFrame(st.session_state['opt_stack_data'])
         
-        if st.button("Start Optimization", type="primary"):
+        if start_optimization:
             with st.spinner("Optimizing... This may take a minute."):
-                # Prepare Inputs
-                
-                # 1. Base Stack
-                base_stack = [(None, float('inf'))]
-                variable_layers_config = []
-                
-                # Iterate DF
-                # Stack indices: Air(0), Layer1(1), Layer2(2)...
-                
-                for i, row in edited_opt_df.iterrows():
-                    mat_name = row['Material']
-                    thickness = row['Thickness (nm)']
-                    mat = load_material(mat_name)
-                    base_stack.append((mat, thickness))
-                    
-                    if row['Optimize']:
-                        # Config for optimizer
-                        # Index in base_stack is i + 1
-                        variable_layers_config.append({
-                            'index': i + 1,
-                            'min': row['Min (nm)'],
-                            'max': row['Max (nm)']
-                        })
-                
-                base_stack.append((None, float('inf')))
-                
-                # 2. Targets
-                # Map DF index to Stack index
-                idx1 = layer_options[t1_layer_key] + 1
-                idx2 = layer_options[t2_layer_key] + 1
-                
-                targets_config = [
-                    {'layer_index': idx1, 'band_center': t1_center, 'band_width': t1_width},
-                    {'layer_index': idx2, 'band_center': t2_center, 'band_width': t2_width}
-                ]
-                
-                # Handle Light Direction (Reverse Stack if Bottom)
-                # Stack indices: 0 (Air), 1..N (Layers), N+1 (Air)
-                # Total len = N + 2
-                
-                if "Bottom" in opt_light_dir:
-                    # Reverse the stack (including Air layers)
-                    base_stack = base_stack[::-1]
-                    
-                    # Update Indices
-                    # If length is L, new_idx = L - 1 - old_idx
-                    L = len(base_stack)
-                    
-                    for conf in variable_layers_config:
-                        conf['index'] = L - 1 - conf['index']
-                        
-                    for conf in targets_config:
-                        conf['layer_index'] = L - 1 - conf['layer_index']
-                
-                # 3. Wavelengths
-                # Cover the full range of interest
-                min_wl_opt = min(t1_center - t1_width, t2_center - t2_width) - 50
-                max_wl_opt = max(t1_center + t1_width, t2_center + t2_width) + 50
-                wavelengths_opt = np.linspace(max(300, min_wl_opt), min(1200, max_wl_opt), 300)
-                
-                # Run Optimization
                 try:
+                    if not layer_options:
+                        raise ValueError("Add at least one layer before starting optimization.")
+
+                    # Prepare Inputs
+                    # 1. Base Stack
+                    base_stack = [(None, float('inf'))]
+                    variable_layers_config = []
+                    
+                    # Iterate DF
+                    # Stack indices: Air(0), Layer1(1), Layer2(2)...
+                    for i, row in current_opt_df.iterrows():
+                        mat_name = row['Material']
+                        thickness = float(row['Thickness (nm)'])
+                        mat = load_material(mat_name)
+                        base_stack.append((mat, thickness))
+                        
+                        if row['Optimize']:
+                            min_nm = float(row['Min (nm)'])
+                            max_nm = float(row['Max (nm)'])
+
+                            if not np.isfinite(min_nm) or not np.isfinite(max_nm):
+                                raise ValueError(f"Layer {i+1} has an invalid optimization range.")
+                            if max_nm < min_nm:
+                                raise ValueError(f"Layer {i+1} has Max < Min.")
+
+                            # Config for optimizer
+                            # Index in base_stack is i + 1
+                            variable_layers_config.append({
+                                'index': i + 1,
+                                'min': min_nm,
+                                'max': max_nm
+                            })
+                    
+                    base_stack.append((None, float('inf')))
+                    
+                    if not variable_layers_config:
+                        raise ValueError("Select at least one layer to optimize.")
+                    
+                    # 2. Targets
+                    # Map DF index to Stack index
+                    idx1 = layer_options[t1_layer_key] + 1
+                    idx2 = layer_options[t2_layer_key] + 1
+                    
+                    targets_config = [
+                        {'layer_index': idx1, 'band_center': t1_center, 'band_width': t1_width},
+                        {'layer_index': idx2, 'band_center': t2_center, 'band_width': t2_width}
+                    ]
+                    
+                    # Handle Light Direction (Reverse Stack if Bottom)
+                    # Stack indices: 0 (Air), 1..N (Layers), N+1 (Air)
+                    # Total len = N + 2
+                    if "Bottom" in opt_light_dir:
+                        # Reverse the stack (including Air layers)
+                        base_stack = base_stack[::-1]
+                        
+                        # Update Indices
+                        # If length is L, new_idx = L - 1 - old_idx
+                        L = len(base_stack)
+                        
+                        for conf in variable_layers_config:
+                            conf['index'] = L - 1 - conf['index']
+                            
+                        for conf in targets_config:
+                            conf['layer_index'] = L - 1 - conf['layer_index']
+                    
+                    # 3. Wavelengths
+                    # Cover the full range of interest
+                    min_wl_opt = min(t1_center - t1_width, t2_center - t2_width) - 50
+                    max_wl_opt = max(t1_center + t1_width, t2_center + t2_width) + 50
+                    wavelengths_opt = np.linspace(max(300, min_wl_opt), min(1200, max_wl_opt), 300)
+                    
+                    # Run Optimization
                     progress_bar = st.progress(0)
                     status_text = st.empty()
                     
@@ -660,10 +781,10 @@ def main():
                     
                     # We can just iterate the original DF rows that were marked for optimization
                     
-                    opt_indices = [i for i, row in edited_opt_df.iterrows() if row['Optimize']]
+                    opt_indices = [i for i, row in current_opt_df.iterrows() if row['Optimize']]
                     
                     for k, df_idx in enumerate(opt_indices):
-                        row = edited_opt_df.iloc[df_idx]
+                        row = current_opt_df.iloc[df_idx]
                         res_data.append({
                             "Layer": row['Material'],
                             "Initial (nm)": row['Thickness (nm)'],

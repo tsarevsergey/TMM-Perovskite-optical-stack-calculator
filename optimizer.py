@@ -1,7 +1,6 @@
 import numpy as np
 from scipy.optimize import differential_evolution
 from tandem_wrapper import calculate_absorbed_power_per_layer
-import copy
 
 class StackOptimizer:
     def __init__(self, base_stack, variable_layers_config, targets_config, wavelengths, crosstalk_penalty=1.0):
@@ -70,12 +69,21 @@ def optimize_stack(
         if progress_callback:
             progress_callback(iteration[0], xk, convergence)
 
-    bounds = [(conf['min'], conf['max']) for conf in variable_layers_config]
+    bounds = []
+    for i, conf in enumerate(variable_layers_config, start=1):
+        lower = float(conf['min'])
+        upper = float(conf['max'])
+        if not np.isfinite(lower) or not np.isfinite(upper):
+            raise ValueError(f"Layer {i} has a non-finite optimization bound.")
+        if upper < lower:
+            raise ValueError(f"Layer {i} has Max < Min.")
+        bounds.append((lower, upper))
     
-    # Use 'workers=-1' to use all available CPU cores
-    # Note: 'updating' parameter might need to be 'deferred' for better parallelization 
-    # but 'immediate' is default. 'deferred' is better for parallel.
+    if not bounds:
+        raise ValueError("Select at least one layer to optimize.")
     
+    # Run in-process for reliability. On Windows + Streamlit, multiprocessing
+    # can fail to pickle cached Material instances when scipy fans out workers.
     result = differential_evolution(
         optimizer.objective, 
         bounds, 
@@ -87,8 +95,8 @@ def optimize_stack(
         recombination=0.7,
         disp=False,
         callback=callback_wrapper,
-        workers=-1, # Parallelize!
-        updating='deferred' # Better for parallelization
+        workers=1,
+        updating='immediate'
     )
     
     # Reconstruct best result
