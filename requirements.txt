@@ -1,0 +1,7 @@
+numpy<2.0.0
+pandas
+matplotlib
+scipy
+tmm
+pyElli
+streamlit>=1.50.0
