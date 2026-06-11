@@ -1,4 +1,6 @@
-NiO https://www.sciencedirect.com/science/article/abs/pii/S0925838814013917?utm_source=chatgpt.com
+NiO https://raw.githubusercontent.com/corawent/tmm-calculations/master/raw-nk/NiO_x-PVLH.csv ; source file cites S. Manzoor et al., Optics Express 26(21), 27441 (2018), https://doi.org/10.1364/OE.26.027441 ; NiOx film on SiO2-coated silicon wafer, 300-1100 nm
+PTAA https://raw.githubusercontent.com/corawent/tmm-calculations/master/raw-nk/PTAA-Santbergen.csv ; R. Santbergen et al., Optics Express 24(18), A1288-A1299 (2016), https://doi.org/10.1364/OE.24.0A1288 ; measured PTAA HTM optical constants, 350-1195 nm
 SnO2 https://www.researchgate.net/figure/Refractive-index-n-and-extinction-coefficient-k-of-a-SnO2-thin-film-b-CuO_fig5_338351987?utm_source=chatgpt.com
-C60 https://static.horiba.com/fileadmin/Horiba/Application/Materials/Material_Research/Graphene/C60_and_C70_Optical_Constants_Study_by_Ellipsometry.pdf?utm_source=chatgpt.com
+C60 https://opg.optica.org/oe/fulltext.cfm?uri=oe-30-21-37957 ; dataset https://fordatis.fraunhofer.de/handle/fordatis/248 ; nk_C60.txt, thermally evaporated C60 thin film, 250-1200 nm
 inorganic: https://www.sciencedirect.com/science/article/pii/S2666998624001649?via%3Dihub#appsec2
+MoO3 https://refractiveindex.info/?shelf=main&book=MoO3&page=Stelling ; C. Stelling et al., Scientific Reports 7, 42530 (2017), https://doi.org/10.1038/srep42530 ; isotropic MoO3 thin film, ellipsometry data used for evaporated MoO3 top electrode stack

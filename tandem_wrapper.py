@@ -141,11 +141,11 @@ def calculate_optical_properties(stack, wavelengths, angle_deg=0, spectrum=None)
         else:
             spectrum_vals = np.array(spectrum)
 
-        total_power = np.trapz(spectrum_vals, wavelengths)
+        total_power = np.trapezoid(spectrum_vals, wavelengths)
         
-        integrated_R = np.trapz(R_list * spectrum_vals, wavelengths) / total_power
-        integrated_T = np.trapz(T_list * spectrum_vals, wavelengths) / total_power
-        integrated_A = np.trapz(A_list * spectrum_vals, wavelengths) / total_power
+        integrated_R = np.trapezoid(R_list * spectrum_vals, wavelengths) / total_power
+        integrated_T = np.trapezoid(T_list * spectrum_vals, wavelengths) / total_power
+        integrated_A = np.trapezoid(A_list * spectrum_vals, wavelengths) / total_power
         
         results['integrated'] = {
             'R': integrated_R,
@@ -205,11 +205,11 @@ def calculate_absorbed_power_per_layer(stack, wavelengths, angle_deg=0, spectrum
         else:
             spectrum_vals = np.array(spectrum)
             
-        total_power = np.trapz(spectrum_vals, wavelengths)
+        total_power = np.trapezoid(spectrum_vals, wavelengths)
         
         integrated_abs = []
         for l_idx in range(num_layers):
-            int_val = np.trapz(layer_absorptions[l_idx] * spectrum_vals, wavelengths) / total_power
+            int_val = np.trapezoid(layer_absorptions[l_idx] * spectrum_vals, wavelengths) / total_power
             integrated_abs.append(int_val)
             
         results['integrated_layer_abs'] = integrated_abs

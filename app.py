@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import os
 import glob
 import datetime
+import io
 import json
 import hashlib
 import re
@@ -100,6 +101,17 @@ def load_uploaded_json_once(uploaded_file, signature_key):
     st.session_state[signature_key] = signature
     return json.loads(raw_bytes.decode("utf-8"))
 
+def download_figure_svg(fig, file_name, key):
+    svg_buffer = io.StringIO()
+    fig.savefig(svg_buffer, format="svg", bbox_inches="tight")
+    st.download_button(
+        label="Download Graph SVG",
+        data=svg_buffer.getvalue(),
+        file_name=file_name,
+        mime="image/svg+xml",
+        key=key,
+    )
+
 def plot_material(material):
     fig, ax1 = plt.subplots()
     
@@ -117,6 +129,8 @@ def plot_material(material):
     
     plt.title(f"Optical Constants for {material.name}")
     st.pyplot(fig)
+    safe_name = sanitize_material_name(material.name) or "material"
+    download_figure_svg(fig, f"{safe_name}_optical_constants.svg", f"{safe_name}_material_svg")
 
 def main():
     st.title("Perovskite Tandem TMM Analysis")
@@ -372,6 +386,7 @@ def main():
             ax.legend(loc='upper left', bbox_to_anchor=(1, 1))
             
             st.pyplot(fig)
+            download_figure_svg(fig, "tmm_light_distribution.svg", "detector_light_distribution_svg")
             
 
             # Layer-by-layer inspection
@@ -523,6 +538,8 @@ def main():
                 ax_mix.set_ylim(0, 5)
                 ax_mix.legend()
                 st.pyplot(fig_mix)
+                safe_preview_name = sanitize_material_name(new_mat_name) or "mixed_material"
+                download_figure_svg(fig_mix, f"{safe_preview_name}_preview.svg", "material_mixer_preview_svg")
                 
                 if st.button("Save New Material"):
                     safe_mat_name = sanitize_material_name(new_mat_name)
